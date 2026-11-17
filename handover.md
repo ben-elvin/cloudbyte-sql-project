@@ -407,3 +407,39 @@ CREATE INDEX ix_usage_daily_day ON usage_daily (day, cost_eur);
 Why it helps: before it, `usage_daily` held two indexes, `usage_daily_pkey` sorted by `usage_id` first and `uq_usage_daily_instance_day` sorted by `instance_id` first. The report's `WHERE` tests `day`, so neither could find September's rows, and the scan read every page. `ix_usage_daily_day` sorts by `day` first, so September's entries sit together, and it also holds `cost_eur`, the one other column the report reads, so the report is answered from the index alone.
 
 The before plan can't be re-run while the kept index is on the table: drop `ix_usage_daily_day` to see it again.
+
+## The blocked session
+
+A second role, `henry`, holds the `UPDATE` privilege on `customers`. While `henry`'s session held a row lock on customer 2, my own `UPDATE` of the same row waited. I found out who was in the way with this query:
+
+```sql
+SELECT w.usename AS waiting, w.wait_event_type, w.wait_event, w.query AS waiting_query,
+       b.usename AS blocking, b.state AS blocking_state, b.query AS blocking_query
+FROM pg_stat_activity w
+JOIN pg_stat_activity b ON b.pid = ANY (pg_blocking_pids(w.pid))
+WHERE w.wait_event_type = 'Lock'
+  AND w.pid <> pg_backend_pid();
+```
+
+The record it printed, taken while my session waited (printed with expanded display, `\x on`):
+
+```
+-[ RECORD 1 ]---+-------------------------------------------------------------
+waiting         | ops_admin
+wait_event_type | Lock
+wait_event      | transactionid
+waiting_query   | UPDATE customers SET city = 'Dresden' WHERE customer_id = 2;
+blocking        | henry
+blocking_state  | idle in transaction
+blocking_query  | UPDATE customers SET city = 'Leipzig' WHERE customer_id = 2;
+```
+
+The statement that held the lock, confirmed by the person who held it as the one statement they ran since `BEGIN;`:
+
+```sql
+UPDATE customers SET city = 'Leipzig' WHERE customer_id = 2;
+```
+
+What I'd do: when a session that isn't mine blocks mine and sits `idle in transaction`, I ask its owner to end their transaction with `COMMIT;` or `ROLLBACK;`, rather than end their session. Ending a session rolls back its whole open transaction, and `blocking_query` shows only its last statement, so I could undo work I can't see. On this instance I couldn't end it anyway: PostgreSQL refused my attempt to end `henry`'s session with `ERROR:  permission denied to terminate process`.
+
+On a quiet database, when no session waits for a lock, the query returns no rows: `(0 rows)`.
