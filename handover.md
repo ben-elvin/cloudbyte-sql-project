@@ -49,7 +49,7 @@ The eleven tables of `cloudbyte`, one heading each, in the order `schema.sql` de
 | `region` | one of three AWS-style regions: `eu-central-1` 135, `eu-north-1` 136, `eu-west-1` 123 | `SELECT region, count(*) FROM instances GROUP BY region ORDER BY region;` |
 | `instance_type` | one of the five sizes: `cb.gpu` 90, `cb.large` 84, `cb.medium` 62, `cb.small` 76, `cb.xlarge` 82 | `SELECT instance_type, count(*) FROM instances GROUP BY instance_type ORDER BY instance_type;` |
 | `launched_on` | the day the instance started, from `2024-01-01` to `2025-10-02` | `SELECT min(instance_id), max(instance_id), min(customer_ref), max(customer_ref), min(launched_on), max(launched_on), min(terminated_on), max(terminated_on), count(*) FROM instances;` |
-| `terminated_on` | the day the instance was stopped, from `2024-03-29` to `2025-12-27`; blank on the first rows, so some instances still run | `SELECT min(instance_id), max(instance_id), min(customer_ref), max(customer_ref), min(launched_on), max(launched_on), min(terminated_on), max(terminated_on), count(*) FROM instances;` |
+| `terminated_on` | the day the instance was stopped, from `2024-03-29` to `2025-12-27`; blank on 325 of the 394 instances, which still run, and filled on 69 | `SELECT count(*) AS instances, count(terminated_on) AS stopped, count(*) FILTER (WHERE terminated_on IS NULL) AS still_running FROM instances;` |
 
 ## usage_daily
 
@@ -143,6 +143,8 @@ The rows that carry `44` (`SELECT instance_id, customer_ref FROM instances WHERE
 `instances` has 6 orphan rows, pointing at 3 customer numbers that are not in `customers` (`SELECT count(*) AS orphan_instances, count(DISTINCT i.customer_ref) AS missing_customers FROM instances i LEFT JOIN customers c ON i.customer_ref = c.customer_id WHERE c.customer_id IS NULL;`).
 
 ## Corrections
+
+*The entries below are in the order I found the faults. The repairs ran in the order of `changes.sql`: Berlin, Acme GmbH, negative hours, test accounts, instances with a missing customer, instance-days loaded twice, then blank `cost_eur`. Follow that order to follow the `cost_eur` total from one repair to the next.*
 
 ### Blank `usage_daily.cost_eur`
 
@@ -448,7 +450,7 @@ On a quiet database, when no session waits for a lock, the query returns no rows
 
 ## For a reader who does not read SQL
 
-When I took over the billing records, several things were wrong: Berlin was written three different ways, one company, Acme GmbH, was on file twice, two test accounts sat among the real customers, six servers were billed to customers who do not exist, some days of server use were recorded twice, twelve days of use were really refunds entered as negative hours, and nearly three thousand days of use had no cost written against them. All of that is now fixed, and the database refuses the same mistakes from now on, so a second company under exactly the same name, a cost left blank, a second record for the same server on the same day or a negative number of hours can no longer get in. Two things can't be fixed: the use for July 2025 was never recorded, so that month is missing and nobody can rebuild it, and the six servers belonged to customers we have no record of, so we can't say who should have paid for them. The figures changed as a result: the total metered cost now stands at 1,025,258.64 euros instead of 1,020,370.65, because the missing costs are filled in and the doubles, refunds and test usage are gone, and Berlin, counted as one city, comes first in the second half of 2023 at 10,221.05 euros, not third at 5,749.73 as the first report said.
+When I took over the billing records, several things were wrong: Berlin was written three different ways, one company, Acme GmbH, was on file twice, two test accounts sat among the real customers, six servers had their use recorded against customers who do not exist, some days of server use were recorded twice, twelve days of use were really refunds entered as negative hours, and nearly three thousand days of use had no cost written against them. All of that is now fixed, and the database refuses the same mistakes from now on, so a second company under exactly the same name, a cost left blank, a second record for the same server on the same day or a negative number of hours can no longer get in. Two things can't be fixed: the use for July 2025 was never recorded, so that month is missing and nobody can rebuild it, and the six servers belonged to customers we have no record of, so we can't say who should have paid for them. The figures changed as a result: the total metered cost now stands at 1,025,258.64 euros instead of 1,020,370.65, because the missing costs are filled in and the doubles, refunds and test usage are gone, and Berlin, counted as one city, comes first in the second half of 2023 at 10,221.05 euros, not third at 5,749.73 as the first report said.
 
 ## Reproducing this
 
