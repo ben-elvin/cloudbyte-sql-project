@@ -139,3 +139,197 @@ The rows that carry `44` (`SELECT instance_id, customer_ref FROM instances WHERE
 | 1400 | 44 |
 
 `instances` has 6 orphan rows, pointing at 3 customer numbers that are not in `customers` (`SELECT count(*) AS orphan_instances, count(DISTINCT i.customer_ref) AS missing_customers FROM instances i LEFT JOIN customers c ON i.customer_ref = c.customer_id WHERE c.customer_id IS NULL;`).
+
+## Corrections
+
+### Blank `usage_daily.cost_eur`
+
+Some rows of `usage_daily` have no value in `cost_eur`. The total of `cost_eur` is 1020370.6520, calculated from 177669 of the 180660 rows: `SELECT count(*) AS usage_rows, count(cost_eur) AS with_cost, sum(cost_eur) AS total_eur FROM usage_daily;`
+
+The rows the total left out: `SELECT count(*) AS usage_rows FROM usage_daily WHERE cost_eur IS NULL;`
+
+*2991 rows.*
+
+Nothing in cloudbyte had been changed when this count was taken.
+
+The repair: a blank cost is the reading's hours times the hourly rate of its instance's type. Rule test first, on the rows that have a cost: 174061 rows with a cost (`SELECT count(*) AS with_cost FROM usage_daily u JOIN instances i ON i.instance_id = u.instance_id JOIN pricing p ON p.instance_type = i.instance_type WHERE u.cost_eur IS NOT NULL;`), and 174061 that agree (`SELECT count(*) AS agree FROM usage_daily u JOIN instances i ON i.instance_id = u.instance_id JOIN pricing p ON p.instance_type = i.instance_type WHERE u.cost_eur = u.hours * p.rate_eur_hour;`).
+
+```sql
+BEGIN;
+UPDATE usage_daily u SET cost_eur = u.hours * p.rate_eur_hour FROM instances i JOIN pricing p ON p.instance_type = i.instance_type WHERE i.instance_id = u.instance_id AND u.cost_eur IS NULL;
+COMMIT;
+```
+
+The count just before the repair was 2942, not 2991 (`SELECT count(*) AS usage_rows FROM usage_daily WHERE cost_eur IS NULL;`): the test-account, orphan and duplicate deletes took 49 blank rows with them. The tag was `UPDATE 2942`. The check `SELECT usage_id FROM usage_daily WHERE cost_eur IS NULL;` returned 0 rows, and row 35 reads 24 hours × 0.048 = 1.1520 by hand. The repair moved the total of `usage_daily.cost_eur` up, from 1008414.6240 to 1025258.6440, now over all 177003 rows.
+
+### Berlin spelled three ways in customers.city
+
+`customers.city` holds Berlin in three spellings: `Berlin` on 7 customers, `Berlín` (an accent on the i) on 1, and `berlin ` (a small b and a space at the end, 7 characters) on 2: `SELECT city, length(city) AS characters, count(*) AS customers FROM customers GROUP BY city ORDER BY city;`
+
+Folded, the three come to 10 customers: `SELECT count(*) AS customers FROM customers WHERE lower(btrim(city)) IN ('berlin', 'berlín');`
+
+Why they are one city: every one of the ten rows has `country` `DE` (`SELECT customer_id, company_name, city, country FROM customers WHERE lower(btrim(city)) IN ('berlin', 'berlín') ORDER BY city, customer_id;`), and there is one Berlin in Germany. `Berlín` is the Spanish spelling of the same city's name. A capital letter and a trailing space are typing differences.
+
+Nothing in cloudbyte had been changed when this count was taken.
+
+The repair:
+
+```sql
+BEGIN;
+UPDATE customers SET city = 'Berlin' WHERE lower(btrim(city)) IN ('berlin', 'berlín');
+COMMIT;
+```
+
+The count just before the repair was 10, the same as above (`SELECT count(*) AS customers FROM customers WHERE lower(btrim(city)) IN ('berlin', 'berlín');`), and the tag was `UPDATE 10`. The check `SELECT customer_id, city FROM customers WHERE lower(btrim(city)) IN ('berlin', 'berlín') AND city <> 'Berlin';` returned 0 rows. The repair didn't change the total of `usage_daily.cost_eur`: it touched only `customers.city`. Had the tag come back below 10, the `UPDATE`'s `WHERE` would have missed some of the rows the count found, and I would have rolled back.
+
+### Negative hours in usage_daily
+
+The rule: an instance can't run for a negative number of hours in a day, so `usage_daily.hours` is never below zero. The rows that break it: `SELECT usage_id, instance_id, day, hours, cost_eur FROM usage_daily WHERE hours < 0 ORDER BY usage_id;`
+
+*12 rows.*
+
+Nothing in cloudbyte had been changed when this count was taken.
+
+The repair: a negative reading is a credit typed in as usage, so the rows are deleted.
+
+```sql
+BEGIN;
+DELETE FROM usage_daily WHERE hours < 0;
+COMMIT;
+```
+
+The count just before the repair was 12, the same as above (`SELECT count(*) AS readings FROM usage_daily WHERE hours < 0;`), and the tag was `DELETE 12`. The check, the listing above, returned 0 rows. The repair moved the total of `usage_daily.cost_eur` up, from 1020370.6520 to 1020387.9520, because the twelve rows had negative costs; the blank rows are still 2991 (`SELECT count(*) AS usage_rows, count(cost_eur) AS with_cost, sum(cost_eur) AS total_eur FROM usage_daily;` now returns 180648, 177657, 1020387.9520).
+
+### Acme GmbH twice in customers
+
+The rule: each company is in `customers` once. The companies that break it, by folded name: `SELECT lower(btrim(company_name)) AS company, count(*) AS rows FROM customers GROUP BY lower(btrim(company_name)) HAVING count(*) > 1;`
+
+*1 row.*
+
+The company is `acme gmbh`, on two rows: `customer_id` 1 (`Acme GmbH`) and `customer_id` 41 (`ACME GmbH`).
+
+Nothing in cloudbyte had been changed when this count was taken.
+
+The consolidation: 1 is the original (the lower id) and 41 the copy. Rows pointing at 41 before the repair (`SELECT 'instances' AS table_name, count(*) AS rows FROM instances WHERE customer_ref = 41 UNION ALL SELECT 'tickets', count(*) FROM tickets WHERE customer_ref = 41 UNION ALL SELECT 'invoices', count(*) FROM invoices WHERE customer_ref = 41 UNION ALL SELECT 'contacts', count(*) FROM contacts WHERE customer_ref = 41 UNION ALL SELECT 'portal_hits', count(*) FROM portal_hits WHERE customer_ref = 41;`): `instances` 16, `tickets` 31, `invoices` 24, `contacts` 3, `portal_hits` 3780.
+
+```sql
+BEGIN;
+UPDATE instances SET customer_ref = 1 WHERE customer_ref = 41;
+UPDATE tickets SET customer_ref = 1 WHERE customer_ref = 41;
+UPDATE invoices SET customer_ref = 1 WHERE customer_ref = 41;
+UPDATE contacts SET customer_ref = 1 WHERE customer_ref = 41;
+UPDATE portal_hits SET customer_ref = 1 WHERE customer_ref = 41;
+DELETE FROM customers WHERE customer_id = 41;
+COMMIT;
+```
+
+Tags: `UPDATE 16`, `UPDATE 31`, `UPDATE 24`, `UPDATE 3`, `UPDATE 3780`, `DELETE 1`. Both checks returned 0 rows: the tally with each table's id (`SELECT 'instances' AS table_name, instance_id AS id FROM instances WHERE customer_ref = 41 UNION ALL SELECT 'tickets', ticket_id FROM tickets WHERE customer_ref = 41 UNION ALL SELECT 'invoices', invoice_id FROM invoices WHERE customer_ref = 41 UNION ALL SELECT 'contacts', contact_id FROM contacts WHERE customer_ref = 41 UNION ALL SELECT 'portal_hits', hit_id FROM portal_hits WHERE customer_ref = 41;`), and the company listing above, also from a new connection after `COMMIT`. The consolidation didn't change the total of `usage_daily.cost_eur`: no `usage_daily` row was touched.
+
+### Instance-days loaded twice in usage_daily
+
+The rule: `usage_daily` holds one row for each instance on each day. The instance-days that break it, each with its number of rows (2 on every line): `SELECT instance_id, day, count(*) AS rows FROM usage_daily GROUP BY instance_id, day HAVING count(*) > 1 ORDER BY instance_id, day;`
+
+*195 rows.*
+
+Nothing in cloudbyte had been changed when this count was taken.
+
+The repair, a self-join that keeps the row with the lower `usage_id`:
+
+```sql
+BEGIN;
+DELETE FROM usage_daily a USING usage_daily b WHERE b.instance_id = a.instance_id AND b.day = a.day AND a.usage_id > b.usage_id;
+COMMIT;
+```
+
+The count just before the repair was 182, not 195 (the listing above, run again). Three earlier repairs moved it: 9 of the 195 were a credit row beside a normal row, gone with the negative hours; 3 were on test-account instances and 1 on an orphan instance, gone with those two repairs. The tag was `DELETE 182`. The check, the listing above, returned 0 rows. The repair moved the total of `usage_daily.cost_eur` down, from 1009428.4480 to 1008414.6240, because each duplicate's cost had been counted twice.
+
+### Test accounts in customers
+
+The rule: a test account isn't a customer. The rows whose `company_name` says they are test accounts: `SELECT customer_id, company_name FROM customers WHERE company_name ILIKE '%test%' ORDER BY customer_id;`
+
+*2 rows.*
+
+The test accounts are `customer_id` 42 (`zz_test_account`) and 43 (`TEST-Account`). Rows linked to them, one line per table: `SELECT 'instances' AS table_name, count(*) AS rows FROM instances WHERE customer_ref IN (42, 43) UNION ALL SELECT 'invoices', count(*) FROM invoices WHERE customer_ref IN (42, 43) UNION ALL SELECT 'contacts', count(*) FROM contacts WHERE customer_ref IN (42, 43) UNION ALL SELECT 'tickets', count(*) FROM tickets WHERE customer_ref IN (42, 43) UNION ALL SELECT 'portal_hits', count(*) FROM portal_hits WHERE customer_ref IN (42, 43) UNION ALL SELECT 'usage_daily, through instances', count(*) FROM usage_daily u JOIN instances i ON i.instance_id = u.instance_id WHERE i.customer_ref IN (42, 43) UNION ALL SELECT 'invoice_lines, through invoices', count(*) FROM invoice_lines l JOIN invoices v ON v.invoice_id = l.invoice_id WHERE v.customer_ref IN (42, 43) UNION ALL SELECT 'ticket_notes, through tickets', count(*) FROM ticket_notes n JOIN tickets t ON t.ticket_id = n.ticket_id WHERE t.customer_ref IN (42, 43);`
+
+- `instances`: 4
+- `invoices`: 44
+- `contacts`: 0
+- `tickets`: 4
+- `portal_hits`: 0
+- `usage_daily`, through `instances`: 2136
+- `invoice_lines`, through `invoices`: 75
+- `ticket_notes`, through `tickets`: 15
+
+Nothing in cloudbyte had been changed when this count was taken.
+
+The repair, children first and `customers` last. The tally just before was the same as above.
+
+```sql
+BEGIN;
+DELETE FROM usage_daily WHERE instance_id IN (SELECT instance_id FROM instances WHERE customer_ref IN (42, 43));
+DELETE FROM invoice_lines WHERE invoice_id IN (SELECT invoice_id FROM invoices WHERE customer_ref IN (42, 43));
+DELETE FROM ticket_notes WHERE ticket_id IN (SELECT ticket_id FROM tickets WHERE customer_ref IN (42, 43));
+DELETE FROM instances WHERE customer_ref IN (42, 43);
+DELETE FROM invoices WHERE customer_ref IN (42, 43);
+DELETE FROM tickets WHERE customer_ref IN (42, 43);
+DELETE FROM contacts WHERE customer_ref IN (42, 43);
+DELETE FROM portal_hits WHERE customer_ref IN (42, 43);
+DELETE FROM customers WHERE customer_id IN (42, 43);
+COMMIT;
+```
+
+Tags: `DELETE 2136`, `DELETE 75`, `DELETE 15`, `DELETE 4`, `DELETE 44`, `DELETE 4`, `DELETE 0`, `DELETE 0`, `DELETE 2`, each matching its line of the tally. Checks, all 0 rows: the tally with each table's id (`SELECT 'instances' AS table_name, instance_id AS id FROM instances WHERE customer_ref IN (42, 43) UNION ALL SELECT 'invoices', invoice_id FROM invoices WHERE customer_ref IN (42, 43) UNION ALL SELECT 'contacts', contact_id FROM contacts WHERE customer_ref IN (42, 43) UNION ALL SELECT 'tickets', ticket_id FROM tickets WHERE customer_ref IN (42, 43) UNION ALL SELECT 'portal_hits', hit_id FROM portal_hits WHERE customer_ref IN (42, 43);`), the rows left pointing at a missing parent (`SELECT 'usage_daily' AS table_name, u.usage_id AS id FROM usage_daily u WHERE NOT EXISTS (SELECT 1 FROM instances i WHERE i.instance_id = u.instance_id) UNION ALL SELECT 'invoice_lines', l.line_id FROM invoice_lines l WHERE NOT EXISTS (SELECT 1 FROM invoices v WHERE v.invoice_id = l.invoice_id) UNION ALL SELECT 'ticket_notes', n.note_id FROM ticket_notes n WHERE NOT EXISTS (SELECT 1 FROM tickets t WHERE t.ticket_id = n.ticket_id);`), and the listing above. The repair moved the total of `usage_daily.cost_eur` down, from 1020387.9520 to 1017315.5440: the test accounts' usage wasn't real spend.
+
+### Instances that point at a customer who doesn't exist
+
+The rule: every instance points at a customer who exists in `customers`. The rows that break it: `SELECT i.instance_id, i.customer_ref FROM instances i LEFT JOIN customers c ON i.customer_ref = c.customer_id WHERE c.customer_id IS NULL ORDER BY i.instance_id;`
+
+*6 rows.*
+
+Nothing in cloudbyte had been changed when this count was taken.
+
+The repair. Counts just before: 6 orphan instances, the same as above and under `## Relationships`, and 1327 rows of `usage_daily` under them (`SELECT count(*) AS usage_rows FROM usage_daily WHERE instance_id IN (SELECT i.instance_id FROM instances i LEFT JOIN customers c ON i.customer_ref = c.customer_id WHERE c.customer_id IS NULL);`).
+
+```sql
+BEGIN;
+DELETE FROM usage_daily WHERE instance_id IN (SELECT i.instance_id FROM instances i LEFT JOIN customers c ON i.customer_ref = c.customer_id WHERE c.customer_id IS NULL);
+DELETE FROM instances WHERE instance_id IN (SELECT i.instance_id FROM instances i LEFT JOIN customers c ON i.customer_ref = c.customer_id WHERE c.customer_id IS NULL);
+COMMIT;
+```
+
+Tags: `DELETE 1327`, `DELETE 6`. Checks, both 0 rows: the listing above, and `SELECT u.usage_id FROM usage_daily u WHERE NOT EXISTS (SELECT 1 FROM instances i WHERE i.instance_id = u.instance_id);`. The repair moved the total of `usage_daily.cost_eur` down, from 1017315.5440 to 1009428.4480.
+
+`customers.status` holds two values, `active` on 35 rows and `churned` on 5 (`SELECT status, count(*) FROM customers GROUP BY status ORDER BY status;`), and neither is a fault: a churned customer was a real customer who left.
+
+### The corrected figures
+
+**Day one's top five**
+
+The published query, behind the first table of `spend-report.md`: `SELECT city, sum(amount_eur) AS total_eur FROM billing_export GROUP BY city ORDER BY total_eur DESC LIMIT 5;`
+
+The corrected query, which keeps each bill once, leaves out test accounts and blank amounts, and counts every spelling of Berlin as one city: `WITH each_bill AS (SELECT DISTINCT * FROM billing_export) SELECT CASE WHEN lower(btrim(city)) IN ('berlin', 'berlín') THEN 'Berlin' ELSE city END AS folded_city, sum(amount_eur) AS total_eur FROM each_bill WHERE company NOT ILIKE '%test%' AND amount_eur IS NOT NULL GROUP BY folded_city ORDER BY total_eur DESC LIMIT 5;`
+
+| Rank | Published | Corrected |
+|---|---|---|
+| 1 | Bremen, 6296.25 | Berlin, 10221.05 |
+| 2 | Hamburg, 5932.03 | Bremen, 5343.37 |
+| 3 | Berlin, 5749.73 | Hamburg, 4858.99 |
+| 4 | München, 3717.24 | München, 3185.13 |
+| 5 | Berlín, 3279.31 | Jena, 2434.80 |
+
+The rows each fault drops, counted at each stop (`WITH each_bill AS (SELECT DISTINCT * FROM billing_export) SELECT (SELECT count(*) FROM billing_export) AS all_rows, (SELECT count(*) FROM each_bill) AS once_each, (SELECT count(*) FROM each_bill WHERE company NOT ILIKE '%test%') AS no_tests, (SELECT count(*) FROM each_bill WHERE company NOT ILIKE '%test%' AND amount_eur IS NOT NULL) AS no_blanks;` returns 406, 336, 327, 306):
+
+- bills that are in twice: 70 rows
+- test accounts: 9 rows
+- blank amounts: 21 rows
+
+The published answer was wrong because Berlin's spend was split across three spellings: counted as one city, Berlin is first at 10221.05, not third at 5749.73.
+
+**The metered cost**
+
+|  | Old | Now |
+|---|---|---|
+| The figure | 1020370.6520 | 1025258.6440 |
+| Rows it left out | 2991 | 0 |
+
+The old figure left out the 2991 rows with a blank cost, and it also counted rows that later repairs deleted: credits, test-account usage, orphan instances' usage and readings loaded twice.
