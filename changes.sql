@@ -91,3 +91,9 @@ COMMIT;
 BEGIN;
 ALTER TABLE customers ADD CONSTRAINT ck_customers_status CHECK (status IN ('active', 'churned'));
 COMMIT;
+
+-- ix_usage_daily_day: the monthly spend report reads one month of usage_daily
+BEGIN;
+CREATE INDEX ix_usage_daily_day ON usage_daily (day, cost_eur);
+COMMIT;
+VACUUM ANALYZE usage_daily;
