@@ -449,3 +449,25 @@ On a quiet database, when no session waits for a lock, the query returns no rows
 ## For a reader who does not read SQL
 
 When I took over the billing records, several things were wrong: Berlin was written three different ways, one company, Acme GmbH, was on file twice, two test accounts sat among the real customers, six servers were billed to customers who do not exist, some days of server use were recorded twice, twelve days of use were really refunds entered as negative hours, and nearly three thousand days of use had no cost written against them. All of that is now fixed, and the database refuses the same mistakes from now on, so a second company under exactly the same name, a cost left blank, a second record for the same server on the same day or a negative number of hours can no longer get in. Two things can't be fixed: the use for July 2025 was never recorded, so that month is missing and nobody can rebuild it, and the six servers belonged to customers we have no record of, so we can't say who should have paid for them. The figures changed as a result: the total metered cost now stands at 1,025,258.64 euros instead of 1,020,370.65, because the missing costs are filled in and the doubles, refunds and test usage are gone, and Berlin, counted as one city, comes first in the second half of 2023 at 10,221.05 euros, not third at 5,749.73 as the first report said.
+
+## Reproducing this
+
+You can rebuild `cloudbyte` as it stands now on a new, empty database, `cloudbyte_fresh`. It takes three steps, each run in its own place:
+
+1. In a psql session connected to `cloudbyte`, make the empty database. The locale options match `cloudbyte`'s, so text sorts the same way in both.
+2. In a terminal, in the folder that holds `load.sql`, `schema.sql` and the eleven CSV files, run `load.sql`. It reads those files from the folder you run it in, so in any other folder it stops before it makes a table. `load.sql` isn't in this repository: it comes in `cloudbyte-database.zip`, the database handout (https://wbscodingschool.github.io/cloud-courses/sql-project/downloads/cloudbyte-database.zip), unpacked to `~/cloudbyte-sql/cloudbyte-database/`.
+3. In a terminal, in this repository's folder, run `changes.sql`, which is in this repository.
+
+Put your own endpoint where `<host>` stands and your own role where `<user>` stands. psql asks for the password.
+
+```
+CREATE DATABASE cloudbyte_fresh OWNER <user>
+  ENCODING 'UTF8' LOCALE_PROVIDER builtin BUILTIN_LOCALE 'C.UTF-8' TEMPLATE template0;
+
+cd ~/cloudbyte-sql/cloudbyte-database/ && psql -h <host> -U <user> -d cloudbyte_fresh -v ON_ERROR_STOP=1 -f load.sql
+cd ~/cloudbyte-sql-project && psql -h <host> -U <user> -d cloudbyte_fresh -v ON_ERROR_STOP=1 -f changes.sql
+```
+
+How far the proof goes: I ran one file of checks on both databases and compared the two outputs. It held each of the eleven tables' row counts, the `\d` description of each table (columns, `not null`, indexes and constraints), and the check from each of the seven entries under `## Corrections`. `diff` printed nothing. The proof doesn't compare the values in the rows, so a match can't show that a repair picked the right values.
+
+`cloudbyte` has one table the copy doesn't: `billing_export`, which I built in Section 1 from the six monthly spreadsheet exports. `load.sql` doesn't make it and `changes.sql` never touches it, so its absence from the copy is expected, not a failed rebuild.
