@@ -46,3 +46,48 @@ COMMIT;
 BEGIN;
 UPDATE usage_daily u SET cost_eur = u.hours * p.rate_eur_hour FROM instances i JOIN pricing p ON p.instance_type = i.instance_type WHERE i.instance_id = u.instance_id AND u.cost_eur IS NULL;
 COMMIT;
+
+-- instances.customer_ref → customers.customer_id
+BEGIN;
+ALTER TABLE instances ADD CONSTRAINT fk_instances_customer FOREIGN KEY (customer_ref) REFERENCES customers (customer_id);
+COMMIT;
+
+-- invoices.customer_ref → customers.customer_id
+BEGIN;
+ALTER TABLE invoices ADD CONSTRAINT fk_invoices_customer FOREIGN KEY (customer_ref) REFERENCES customers (customer_id);
+COMMIT;
+
+-- usage_daily.instance_id → instances.instance_id
+BEGIN;
+ALTER TABLE usage_daily ADD CONSTRAINT fk_usage_daily_instance FOREIGN KEY (instance_id) REFERENCES instances (instance_id);
+COMMIT;
+
+-- invoice_lines.invoice_id → invoices.invoice_id
+BEGIN;
+ALTER TABLE invoice_lines ADD CONSTRAINT fk_invoice_lines_invoice FOREIGN KEY (invoice_id) REFERENCES invoices (invoice_id);
+COMMIT;
+
+-- usage_daily.cost_eur NOT NULL
+BEGIN;
+ALTER TABLE usage_daily ALTER COLUMN cost_eur SET NOT NULL;
+COMMIT;
+
+-- uq_customers_company_name
+BEGIN;
+ALTER TABLE customers ADD CONSTRAINT uq_customers_company_name UNIQUE (company_name);
+COMMIT;
+
+-- uq_usage_daily_instance_day
+BEGIN;
+ALTER TABLE usage_daily ADD CONSTRAINT uq_usage_daily_instance_day UNIQUE (instance_id, day);
+COMMIT;
+
+-- ck_usage_daily_hours
+BEGIN;
+ALTER TABLE usage_daily ADD CONSTRAINT ck_usage_daily_hours CHECK (hours >= 0 AND hours <= 24);
+COMMIT;
+
+-- ck_customers_status
+BEGIN;
+ALTER TABLE customers ADD CONSTRAINT ck_customers_status CHECK (status IN ('active', 'churned'));
+COMMIT;
