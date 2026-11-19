@@ -450,6 +450,8 @@ On a quiet database, when no session waits for a lock, the query returns no rows
 
 ## For a reader who does not read SQL
 
+Start with `## Corrections`: it says which published figures changed.
+
 When I took over the billing records, several things were wrong: Berlin was written three different ways, one company, Acme GmbH, was on file twice, two test accounts sat among the real customers, six servers had their use recorded against customers who do not exist, some days of server use were recorded twice, twelve days of use were really refunds entered as negative hours, and nearly three thousand days of use had no cost written against them. All of that is now fixed, and the database refuses the same mistakes from now on, so a second company under exactly the same name, a cost left blank, a second record for the same server on the same day or a negative number of hours can no longer get in. Two things can't be fixed: the use for July 2025 was never recorded, so that month is missing and nobody can rebuild it, and the six servers belonged to customers we have no record of, so we can't say who should have paid for them. The figures changed as a result: the total metered cost now stands at 1,025,258.64 euros instead of 1,020,370.65, because the missing costs are filled in and the doubles, refunds and test usage are gone, and Berlin, counted as one city, comes first in the second half of 2023 at 10,221.05 euros, not third at 5,749.73 as the first report said.
 
 ## Reproducing this
